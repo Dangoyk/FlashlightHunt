@@ -135,7 +135,7 @@ struct ARSceneView: UIViewRepresentable {
             punchHole(ctx: ctx, at: CGPoint(x: tx, y: ty))
 
             // Wrap seam horizontally so the scratch doesn't cut off at the texture edge
-            let r = CGFloat(65)
+            let r = CGFloat(18)
             if tx < r        { punchHole(ctx: ctx, at: CGPoint(x: tx + CGFloat(Self.texW), y: ty)) }
             if tx > CGFloat(Self.texW) - r { punchHole(ctx: ctx, at: CGPoint(x: tx - CGFloat(Self.texW), y: ty)) }
 
@@ -146,23 +146,24 @@ struct ARSceneView: UIViewRepresentable {
         // .clear erases destination pixels proportional to the source alpha.
         private func punchHole(ctx: CGContext, at center: CGPoint) {
             let cs = CGColorSpaceCreateDeviceRGB()
-            // Gradient: opaque white at center (fully erases) → transparent at edge (erases nothing)
+            // Gradient: opaque white at center (fully erases) → transparent at edge (erases nothing).
+            // Small radius (18 px ≈ 13° of arc) so the player must sweep deliberately to reveal the room.
             let colors: [CGColor] = [
-                UIColor.white.cgColor,                       // centre: alpha=1 → fully cleared
-                UIColor.white.withAlphaComponent(0.9).cgColor,
-                UIColor.white.withAlphaComponent(0.4).cgColor,
-                UIColor.clear.cgColor,                       // edge: alpha=0 → nothing cleared
+                UIColor.white.cgColor,
+                UIColor.white.withAlphaComponent(0.85).cgColor,
+                UIColor.white.withAlphaComponent(0.3).cgColor,
+                UIColor.clear.cgColor,
             ]
-            let locs: [CGFloat] = [0, 0.3, 0.7, 1.0]
+            let locs: [CGFloat] = [0, 0.4, 0.75, 1.0]
             guard let grad = CGGradient(colorsSpace: cs, colors: colors as CFArray, locations: locs)
             else { return }
 
             ctx.setBlendMode(.clear)
             ctx.drawRadialGradient(grad,
                                    startCenter: center, startRadius: 0,
-                                   endCenter:   center, endRadius:   65,
+                                   endCenter:   center, endRadius:   18,
                                    options: [.drawsAfterEndLocation])
-            ctx.setBlendMode(.normal)   // reset so subsequent draws aren't affected
+            ctx.setBlendMode(.normal)
         }
 
         private func sphereImage() -> UIImage? {
