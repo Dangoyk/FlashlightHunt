@@ -23,6 +23,9 @@ struct ARSceneView: UIViewRepresentable {
         switch gameState.phase {
         case .scanning, .hiding:
             uiView.debugOptions = [ARSCNDebugOptions.showFeaturePoints]
+        case .gaveUp:
+            uiView.debugOptions = []
+            context.coordinator.revealSwitch()
         default:
             uiView.debugOptions = []
         }
@@ -40,12 +43,11 @@ struct ARSceneView: UIViewRepresentable {
         private var switchFamily: Set<ObjectIdentifier> = []
         private var switchPlaced = false
         private var lastCheckTime: TimeInterval = 0
+        var isRevealingSwitch = false
 
-        // Scan progress
         private var planeAreas: [UUID: Float] = [:]
-        private let targetArea: Float = 0.5   // m² of wall needed for 100 %
+        private let targetArea: Float = 0.5
 
-        // Haptics — created once, reused each pulse
         private let lightFX  = UIImpactFeedbackGenerator(style: .light)
         private let mediumFX = UIImpactFeedbackGenerator(style: .medium)
         private let heavyFX  = UIImpactFeedbackGenerator(style: .heavy)
@@ -57,7 +59,7 @@ struct ARSceneView: UIViewRepresentable {
             lightFX.prepare(); mediumFX.prepare(); heavyFX.prepare()
         }
 
-        // MARK: Plane detected
+        // MARK: Plane detection
 
         func renderer(_ renderer: SCNSceneRenderer, didAdd node: SCNNode, for anchor: ARAnchor) {
             guard let plane = anchor as? ARPlaneAnchor,
@@ -68,19 +70,49 @@ struct ARSceneView: UIViewRepresentable {
             pushScanProgress()
             addPlaneViz(to: node, plane: plane)
 
-            guard !switchPlaced, area > 0.05 else { return }
+            guard !switchPlaced, area > 0.05,
+                  let sv = sceneView, let pov = sv.pointOfView else { return }
             switchPlaced = true
 
             let sw = makeSwitchNode()
-            let halfW = min(plane.planeExtent.width / 2, 0.35)
-            sw.position = SCNVector3(
-                Float.random(in: -halfW...halfW),
-                Float.random(in: 0.0...0.6),
-                0
-            )
-            node.addChildNode(sw)
-            switchNode = sw
 
+            // Build an explicit world-space transform so the switch is always upright
+            // and its face points toward the camera — regardless of how ARKit orients
+            // the plane anchor's local axes (which varies by iOS version).
+            let col3 = plane.transform.columns.3
+            let planeWorldPos = simd_float3(col3.x, col3.y, col3.z)
+            let camPos = pov.simdWorldPosition
+
+            // Horizontal direction from wall toward camera
+            var toCamera = camPos - planeWorldPos
+            toCamera.y = 0
+            let toCamLen = simd_length(toCamera)
+            let fwd: simd_float3 = toCamLen > 0.01 ? toCamera / toCamLen : simd_float3(0, 0, 1)
+
+            let worldUp = simd_float3(0, 1, 0)
+            let right = simd_normalize(simd_cross(worldUp, fwd))
+
+            let halfW = min(plane.planeExtent.width / 2, 0.35)
+            let offsetAlongRight = Float.random(in: -halfW...halfW)
+            let offsetUp         = Float.random(in: 0.05...0.7)
+
+            let switchPos = simd_float3(
+                planeWorldPos.x + right.x * offsetAlongRight + fwd.x * 0.01,
+                planeWorldPos.y + offsetUp,
+                planeWorldPos.z + right.z * offsetAlongRight + fwd.z * 0.01
+            )
+
+            // col0=right(X), col1=worldUp(Y), col2=fwd toward camera(Z)
+            // Switch's local +Z faces the viewer so the toggle sticks outward correctly.
+            sw.simdTransform = simd_float4x4(columns: (
+                simd_float4(right.x,    right.y,    right.z,    0),
+                simd_float4(worldUp.x,  worldUp.y,  worldUp.z,  0),
+                simd_float4(fwd.x,      fwd.y,      fwd.z,      0),
+                simd_float4(switchPos.x, switchPos.y, switchPos.z, 1)
+            ))
+            sv.scene.rootNode.addChildNode(sw)
+
+            switchNode = sw
             var fam: Set<ObjectIdentifier> = [ObjectIdentifier(sw)]
             sw.enumerateChildNodes { n, _ in fam.insert(ObjectIdentifier(n)) }
             switchFamily = fam
@@ -91,7 +123,6 @@ struct ARSceneView: UIViewRepresentable {
         func renderer(_ renderer: SCNSceneRenderer, didUpdate node: SCNNode, for anchor: ARAnchor) {
             guard let plane = anchor as? ARPlaneAnchor,
                   plane.alignment == .vertical else { return }
-
             planeAreas[plane.identifier] = plane.planeExtent.width * plane.planeExtent.height
             pushScanProgress()
             updatePlaneViz(on: node, plane: plane)
@@ -113,7 +144,6 @@ struct ARSceneView: UIViewRepresentable {
             let ph = gameState.phase
             guard ph == .searching || ph == .found else { return }
 
-            // Binary spotlight hit test (crosshair dead-center)
             let center = CGPoint(x: sv.bounds.midX, y: sv.bounds.midY)
             let hits = sv.hitTest(center, options: nil)
             let inSpot = hits.contains { switchFamily.contains(ObjectIdentifier($0.node)) }
@@ -123,32 +153,24 @@ struct ARSceneView: UIViewRepresentable {
                 else       { self.gameState.markLost();  self.setGlow(false) }
             }
 
-            // Proximity haptics (searching only)
             if ph == .searching, let dist = screenDistance(to: switchNode, in: sv) {
                 driveHaptics(screenDist: dist, at: time)
             }
         }
 
-        // Projects switch world position to screen and returns distance from center.
-        // Returns nil if the switch is behind the camera.
         private func screenDistance(to node: SCNNode?, in sv: ARSCNView) -> Double? {
             guard let node, let pov = sv.pointOfView else { return nil }
-
-            // Camera forward = -Z column of world transform
             let col2 = pov.simdWorldTransform.columns.2
             let camFwd = simd_float3(-col2.x, -col2.y, -col2.z)
             let toSwitch = node.simdWorldPosition - pov.simdWorldPosition
             guard simd_dot(simd_normalize(toSwitch), camFwd) > 0 else { return nil }
-
             let p = sv.projectPoint(node.worldPosition)
-            guard p.z < 1 else { return nil }   // behind far plane
-
+            guard p.z < 1 else { return nil }
             return hypot(Double(p.x) - Double(sv.bounds.midX),
                          Double(p.y) - Double(sv.bounds.midY))
         }
 
         private func driveHaptics(screenDist: Double, at time: TimeInterval) {
-            // Map screen distance → pulse interval + generator
             let (interval, gen): (TimeInterval, UIImpactFeedbackGenerator)
             switch screenDist {
             case ..<55:   (interval, gen) = (0.15, heavyFX)
@@ -157,13 +179,30 @@ struct ARSceneView: UIViewRepresentable {
             case ..<260:  (interval, gen) = (1.20, lightFX)
             default: return
             }
-
             guard time - lastHapticTime >= interval else { return }
             lastHapticTime = time
-            DispatchQueue.main.async {
-                gen.impactOccurred()
-                gen.prepare()
-            }
+            DispatchQueue.main.async { gen.impactOccurred(); gen.prepare() }
+        }
+
+        // MARK: Give-up reveal
+
+        func revealSwitch() {
+            guard !isRevealingSwitch, let sw = switchNode else { return }
+            isRevealingSwitch = true
+            setGlow(true)
+
+            let grow   = SCNAction.scale(to: 1.5, duration: 0.35)
+            let shrink = SCNAction.scale(to: 1.0, duration: 0.35)
+            sw.runAction(.repeatForever(.sequence([grow, shrink])), forKey: "reveal")
+
+            let light = SCNLight()
+            light.type = .omni
+            light.color = UIColor.yellow
+            light.intensity = 1500
+            let lightNode = SCNNode()
+            lightNode.light = light
+            lightNode.position = SCNVector3(0, 0, 0.15)
+            sw.addChildNode(lightNode)
         }
 
         // MARK: Glow
@@ -172,6 +211,7 @@ struct ARSceneView: UIViewRepresentable {
             let color: UIColor = on ? .yellow.withAlphaComponent(0.7) : .clear
             switchNode?.geometry?.firstMaterial?.emission.contents = color
             switchNode?.enumerateChildNodes { n, _ in
+                guard n.light == nil else { return }
                 n.geometry?.firstMaterial?.emission.contents = color
             }
         }
@@ -185,11 +225,11 @@ struct ARSceneView: UIViewRepresentable {
             mat.diffuse.contents = UIColor.cyan.withAlphaComponent(0.22)
             mat.isDoubleSided = true
             geo.materials = [mat]
-            let vizNode = SCNNode(geometry: geo)
-            vizNode.name = "viz"
+            let viz = SCNNode(geometry: geo)
+            viz.name = "viz"
             let c = plane.center
-            vizNode.position = SCNVector3(c.x, c.y, c.z)
-            node.addChildNode(vizNode)
+            viz.position = SCNVector3(c.x, c.y, c.z)
+            node.addChildNode(viz)
         }
 
         private func updatePlaneViz(on node: SCNNode, plane: ARPlaneAnchor) {
