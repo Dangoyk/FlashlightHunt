@@ -109,68 +109,59 @@ struct ContentView: View {
     }
 
     // MARK: - Scanning
+    // The scratch-sphere IS the visual — just a minimal HUD floats on top.
 
     private var scanningOverlay: some View {
         ZStack {
-            Color.black.opacity(0.45).ignoresSafeArea()
-            VStack(spacing: 28) {
-                ZStack {
-                    Circle()
-                        .stroke(Color.white.opacity(0.15), lineWidth: 4)
-                        .frame(width: 130, height: 130)
+            // Crosshair shows the player what they're scratching toward
+            scanReticle
 
-                    Circle()
-                        .trim(from: 0, to: gameState.scanProgress)
-                        .stroke(Color.cyan,
-                                style: StrokeStyle(lineWidth: 4, lineCap: .round))
-                        .frame(width: 130, height: 130)
-                        .rotationEffect(.degrees(-90))
-                        .animation(.easeOut(duration: 0.3), value: gameState.scanProgress)
+            VStack {
+                Text(scanStatusText)
+                    .font(.caption)
+                    .foregroundColor(.white.opacity(0.65))
+                    .padding(.top, 60)
 
-                    ringCenter
-                }
+                Spacer()
 
                 VStack(spacing: 6) {
-                    Text(scanStatusText)
-                        .foregroundColor(.white)
-                        .font(.headline)
-
-                    if case .scanning = gameState.phase {
-                        Text("Move your phone slowly around the room")
-                            .foregroundColor(.white.opacity(0.6))
-                            .font(.caption)
-                            .multilineTextAlignment(.center)
+                    GeometryReader { geo in
+                        ZStack(alignment: .leading) {
+                            RoundedRectangle(cornerRadius: 2)
+                                .fill(Color.white.opacity(0.15))
+                            RoundedRectangle(cornerRadius: 2)
+                                .fill(Color.white.opacity(0.7))
+                                .frame(width: geo.size.width * gameState.scanProgress)
+                                .animation(.easeOut(duration: 0.3), value: gameState.scanProgress)
+                        }
                     }
-                }
+                    .frame(height: 3)
+                    .padding(.horizontal, 40)
 
-                Text("v\(appVersion)")
-                    .font(.caption2)
-                    .foregroundColor(.white.opacity(0.3))
+                    Text("\(Int(gameState.scanProgress * 100))% walls detected")
+                        .font(.caption2)
+                        .foregroundColor(.white.opacity(0.45))
+
+                    Text("v\(appVersion)")
+                        .font(.caption2)
+                        .foregroundColor(.white.opacity(0.2))
+                }
+                .padding(.bottom, 44)
             }
-            .padding(32)
-            .background(.ultraThinMaterial)
-            .cornerRadius(20)
-            .padding(40)
         }
     }
 
-    @ViewBuilder
-    private var ringCenter: some View {
-        switch gameState.phase {
-        case .hiding:
-            Image(systemName: "lightswitch.off")
-                .font(.system(size: 30))
-                .foregroundColor(.white)
-        default:
-            VStack(spacing: 2) {
-                Text("\(Int(gameState.scanProgress * 100))%")
-                    .font(.title2).bold()
-                    .foregroundColor(.white)
-                    .contentTransition(.numericText())
-                Text("walls")
-                    .font(.caption2)
-                    .foregroundColor(.white.opacity(0.5))
-            }
+    private var scanReticle: some View {
+        ZStack {
+            Circle()
+                .stroke(Color.white.opacity(0.5), lineWidth: 1)
+                .frame(width: 22, height: 22)
+            Rectangle()
+                .fill(Color.white.opacity(0.5))
+                .frame(width: 12, height: 1)
+            Rectangle()
+                .fill(Color.white.opacity(0.5))
+                .frame(width: 1, height: 12)
         }
     }
 
@@ -179,10 +170,10 @@ struct ContentView: View {
         case .hiding: return "Hiding the switch…"
         default:
             switch gameState.scanProgress {
-            case ..<0.3: return "Scanning walls…"
-            case ..<0.6: return "Getting there…"
-            case ..<0.9: return "Almost ready…"
-            default:     return "Looking good!"
+            case ..<0.25: return "Sweep your phone around to reveal the room"
+            case ..<0.6:  return "Look in all directions"
+            case ..<0.9:  return "Almost there…"
+            default:      return "Looking good!"
             }
         }
     }

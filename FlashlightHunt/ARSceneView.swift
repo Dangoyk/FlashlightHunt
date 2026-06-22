@@ -12,6 +12,7 @@ struct ARSceneView: UIViewRepresentable {
         view.autoenablesDefaultLighting = true
         view.debugOptions = [ARSCNDebugOptions.showFeaturePoints]
         context.coordinator.sceneView = view
+        context.coordinator.setupScratchSphere(in: view.scene)
 
         let config = ARWorldTrackingConfiguration()
         config.planeDetection = [.vertical]
@@ -23,6 +24,9 @@ struct ARSceneView: UIViewRepresentable {
         switch gameState.phase {
         case .scanning, .hiding:
             uiView.debugOptions = [ARSCNDebugOptions.showFeaturePoints]
+        case .searching, .found:
+            context.coordinator.revealRoom()     // fade sphere away, show camera
+            uiView.debugOptions = []
         case .gaveUp:
             uiView.debugOptions = []
             context.coordinator.revealSwitch()
@@ -39,15 +43,27 @@ struct ARSceneView: UIViewRepresentable {
         let gameState: GameState
         weak var sceneView: ARSCNView?
 
+        // Switch state
         private var switchNode: SCNNode?
         private var switchFamily: Set<ObjectIdentifier> = []
         private var switchPlaced = false
         private var lastCheckTime: TimeInterval = 0
         var isRevealingSwitch = false
 
+        // Wall-area tracking (for the scan-progress bar only, no visible planes)
         private var planeAreas: [UUID: Float] = [:]
         private let targetArea: Float = 0.5
 
+        // Scratch-sphere
+        private static let texW = 512
+        private static let texH = 256
+        private var scratchCtx: CGContext?
+        private var sphereNode: SCNNode?
+        private var sphereGeo: SCNSphere?
+        private var sphereRevealed = false
+        private var lastScratchTime: TimeInterval = 0
+
+        // Haptics
         private let lightFX  = UIImpactFeedbackGenerator(style: .light)
         private let mediumFX = UIImpactFeedbackGenerator(style: .medium)
         private let heavyFX  = UIImpactFeedbackGenerator(style: .heavy)
@@ -59,7 +75,102 @@ struct ARSceneView: UIViewRepresentable {
             lightFX.prepare(); mediumFX.prepare(); heavyFX.prepare()
         }
 
-        // MARK: Plane detection
+        // MARK: Scratch-sphere setup
+
+        func setupScratchSphere(in scene: SCNScene) {
+            let w = Self.texW, h = Self.texH
+            guard let ctx = CGContext(
+                data: nil, width: w, height: h,
+                bitsPerComponent: 8, bytesPerRow: w * 4,
+                space: CGColorSpaceCreateDeviceRGB(),
+                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+            ) else { return }
+
+            // Start fully opaque black — the "no depth" paint layer the player scratches through
+            ctx.setFillColor(UIColor.black.cgColor)
+            ctx.fill(CGRect(x: 0, y: 0, width: w, height: h))
+            scratchCtx = ctx
+
+            let geo = SCNSphere(radius: 8)
+            geo.segmentCount = 72
+            let mat = SCNMaterial()
+            mat.diffuse.contents = sphereImage()
+            mat.transparencyMode  = .aOne          // alpha=0 → transparent, alpha=1 → opaque
+            mat.lightingModel     = .constant       // flat black — reads as a 2D sheet, not a sphere
+            mat.cullMode          = .front          // camera is inside; render the inner surface
+            mat.isDoubleSided     = false
+            geo.materials = [mat]
+
+            let node = SCNNode(geometry: geo)
+            scene.rootNode.addChildNode(node)
+            sphereNode = node
+            sphereGeo  = geo
+        }
+
+        // Fade the sphere out and remove it when gameplay starts
+        func revealRoom() {
+            guard !sphereRevealed, let node = sphereNode else { return }
+            sphereRevealed = true
+            node.runAction(.sequence([
+                .fadeOut(duration: 0.6),
+                .removeFromParentNode()
+            ]))
+        }
+
+        // Convert camera forward direction → UV on the sphere, then punch a transparent hole.
+        private func scratchSphere(cameraForward fwd: simd_float3) {
+            guard let ctx = scratchCtx else { return }
+
+            let n = simd_normalize(fwd)
+
+            // Standard equirectangular UV for the sphere's surface normal
+            // atan2(x, -z): 0 when looking in -Z (SceneKit "into scene"), seam at +Z
+            let az = atan2f(n.x, -n.z)                           // −π … +π
+            let el = asinf(max(-1, min(1, n.y)))                  // −π/2 … +π/2
+
+            let tx = CGFloat(Double(az) / (2 * .pi) + 0.5) * CGFloat(Self.texW)
+            // CGContext origin is bottom-left; sphere UV v=0 = north pole (up) = bottom of CGContext ✓
+            let ty = CGFloat(0.5 - Double(el) / .pi) * CGFloat(Self.texH)
+
+            punchHole(ctx: ctx, at: CGPoint(x: tx, y: ty))
+
+            // Wrap seam horizontally so the scratch doesn't cut off at the texture edge
+            let r = CGFloat(65)
+            if tx < r        { punchHole(ctx: ctx, at: CGPoint(x: tx + CGFloat(Self.texW), y: ty)) }
+            if tx > CGFloat(Self.texW) - r { punchHole(ctx: ctx, at: CGPoint(x: tx - CGFloat(Self.texW), y: ty)) }
+
+            sphereGeo?.firstMaterial?.diffuse.contents = sphereImage()
+        }
+
+        // Draw a soft transparent hole using CGContext .clear blend mode.
+        // .clear erases destination pixels proportional to the source alpha.
+        private func punchHole(ctx: CGContext, at center: CGPoint) {
+            let cs = CGColorSpaceCreateDeviceRGB()
+            // Gradient: opaque white at center (fully erases) → transparent at edge (erases nothing)
+            let colors: [CGColor] = [
+                UIColor.white.cgColor,                       // centre: alpha=1 → fully cleared
+                UIColor.white.withAlphaComponent(0.9).cgColor,
+                UIColor.white.withAlphaComponent(0.4).cgColor,
+                UIColor.clear.cgColor,                       // edge: alpha=0 → nothing cleared
+            ]
+            let locs: [CGFloat] = [0, 0.3, 0.7, 1.0]
+            guard let grad = CGGradient(colorsSpace: cs, colors: colors as CFArray, locations: locs)
+            else { return }
+
+            ctx.setBlendMode(.clear)
+            ctx.drawRadialGradient(grad,
+                                   startCenter: center, startRadius: 0,
+                                   endCenter:   center, endRadius:   65,
+                                   options: [.drawsAfterEndLocation])
+            ctx.setBlendMode(.normal)   // reset so subsequent draws aren't affected
+        }
+
+        private func sphereImage() -> UIImage? {
+            guard let ctx = scratchCtx, let cgImg = ctx.makeImage() else { return nil }
+            return UIImage(cgImage: cgImg)
+        }
+
+        // MARK: Plane detection (tracking area for progress bar only — no visible planes)
 
         func renderer(_ renderer: SCNSceneRenderer, didAdd node: SCNNode, for anchor: ARAnchor) {
             guard let plane = anchor as? ARPlaneAnchor,
@@ -68,7 +179,6 @@ struct ARSceneView: UIViewRepresentable {
             let area = plane.planeExtent.width * plane.planeExtent.height
             planeAreas[plane.identifier] = area
             pushScanProgress()
-            addPlaneViz(to: node, plane: plane)
 
             guard !switchPlaced, area > 0.05,
                   let sv = sceneView, let pov = sv.pointOfView else { return }
@@ -76,34 +186,26 @@ struct ARSceneView: UIViewRepresentable {
 
             let sw = makeSwitchNode()
 
-            // Build an explicit world-space transform so the switch is always upright
-            // and its face points toward the camera — regardless of how ARKit orients
-            // the plane anchor's local axes (which varies by iOS version).
+            // Explicit world-space transform: always upright, face toward camera.
             let col3 = plane.transform.columns.3
             let planeWorldPos = simd_float3(col3.x, col3.y, col3.z)
             let camPos = pov.simdWorldPosition
 
-            // Horizontal direction from wall toward camera
             var toCamera = camPos - planeWorldPos
             toCamera.y = 0
-            let toCamLen = simd_length(toCamera)
-            let fwd: simd_float3 = toCamLen > 0.01 ? toCamera / toCamLen : simd_float3(0, 0, 1)
+            let len = simd_length(toCamera)
+            let fwd: simd_float3 = len > 0.01 ? toCamera / len : simd_float3(0, 0, 1)
 
             let worldUp = simd_float3(0, 1, 0)
             let right = simd_normalize(simd_cross(worldUp, fwd))
 
             let halfW = min(plane.planeExtent.width / 2, 0.35)
-            let offsetAlongRight = Float.random(in: -halfW...halfW)
-            let offsetUp         = Float.random(in: 0.05...0.7)
-
             let switchPos = simd_float3(
-                planeWorldPos.x + right.x * offsetAlongRight + fwd.x * 0.01,
-                planeWorldPos.y + offsetUp,
-                planeWorldPos.z + right.z * offsetAlongRight + fwd.z * 0.01
+                planeWorldPos.x + right.x * Float.random(in: -halfW...halfW) + fwd.x * 0.01,
+                planeWorldPos.y + Float.random(in: 0.05...0.7),
+                planeWorldPos.z + right.z * Float.random(in: -halfW...halfW) + fwd.z * 0.01
             )
 
-            // col0=right(X), col1=worldUp(Y), col2=fwd toward camera(Z)
-            // Switch's local +Z faces the viewer so the toggle sticks outward correctly.
             sw.simdTransform = simd_float4x4(columns: (
                 simd_float4(right.x,    right.y,    right.z,    0),
                 simd_float4(worldUp.x,  worldUp.y,  worldUp.z,  0),
@@ -125,7 +227,6 @@ struct ARSceneView: UIViewRepresentable {
                   plane.alignment == .vertical else { return }
             planeAreas[plane.identifier] = plane.planeExtent.width * plane.planeExtent.height
             pushScanProgress()
-            updatePlaneViz(on: node, plane: plane)
         }
 
         private func pushScanProgress() {
@@ -137,11 +238,21 @@ struct ARSceneView: UIViewRepresentable {
         // MARK: Per-frame
 
         func renderer(_ renderer: SCNSceneRenderer, updateAtTime time: TimeInterval) {
+            let ph = gameState.phase
+
+            // Scratch the sphere ~20 fps during scanning
+            if (ph == .scanning || ph == .hiding),
+               time - lastScratchTime > 0.05,
+               let frame = sceneView?.session.currentFrame {
+                lastScratchTime = time
+                let c2 = frame.camera.transform.columns.2
+                scratchSphere(cameraForward: simd_float3(-c2.x, -c2.y, -c2.z))
+            }
+
             guard time - lastCheckTime > 0.05 else { return }
             lastCheckTime = time
 
             guard let sv = sceneView, !switchFamily.isEmpty else { return }
-            let ph = gameState.phase
             guard ph == .searching || ph == .found else { return }
 
             let center = CGPoint(x: sv.bounds.midX, y: sv.bounds.midY)
@@ -214,31 +325,6 @@ struct ARSceneView: UIViewRepresentable {
                 guard n.light == nil else { return }
                 n.geometry?.firstMaterial?.emission.contents = color
             }
-        }
-
-        // MARK: Plane visualization
-
-        private func addPlaneViz(to node: SCNNode, plane: ARPlaneAnchor) {
-            let geo = SCNPlane(width: CGFloat(plane.planeExtent.width),
-                               height: CGFloat(plane.planeExtent.height))
-            let mat = SCNMaterial()
-            mat.diffuse.contents = UIColor.cyan.withAlphaComponent(0.22)
-            mat.isDoubleSided = true
-            geo.materials = [mat]
-            let viz = SCNNode(geometry: geo)
-            viz.name = "viz"
-            let c = plane.center
-            viz.position = SCNVector3(c.x, c.y, c.z)
-            node.addChildNode(viz)
-        }
-
-        private func updatePlaneViz(on node: SCNNode, plane: ARPlaneAnchor) {
-            guard let viz = node.childNode(withName: "viz", recursively: false),
-                  let geo = viz.geometry as? SCNPlane else { return }
-            geo.width  = CGFloat(plane.planeExtent.width)
-            geo.height = CGFloat(plane.planeExtent.height)
-            let c = plane.center
-            viz.position = SCNVector3(c.x, c.y, c.z)
         }
 
         // MARK: Switch geometry
