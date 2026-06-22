@@ -2,7 +2,7 @@ import Foundation
 
 enum GamePhase: Equatable {
     case scanning
-    case hiding       // switch placed, about to go dark
+    case hiding
     case searching
     case found
     case won(seconds: Int)
@@ -10,13 +10,12 @@ enum GamePhase: Equatable {
 
 class GameState: ObservableObject {
     @Published var phase: GamePhase = .scanning
-    @Published var scanMessage = "Walk around slowly to detect walls…"
+    @Published var scanProgress: Double = 0
 
     private var startTime: Date?
 
     func switchWasPlaced() {
         phase = .hiding
-        scanMessage = "Switch hidden. Lights out in 2…"
         DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in
             self?.phase = .searching
             self?.startTime = Date()
@@ -41,7 +40,7 @@ class GameState: ObservableObject {
 
     func reset() {
         phase = .scanning
-        scanMessage = "Walk around slowly to detect walls…"
+        scanProgress = 0
         startTime = nil
     }
 }

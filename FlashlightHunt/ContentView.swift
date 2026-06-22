@@ -31,32 +31,88 @@ struct ContentView: View {
         }
         .id(gameID)
         .onTapGesture {
-            if case .found = gameState.phase {
-                gameState.win()
-            }
+            if case .found = gameState.phase { gameState.win() }
         }
     }
 
-    // MARK: - Overlays
+    // MARK: - Scanning overlay
 
     private var scanningOverlay: some View {
         ZStack {
-            Color.black.opacity(0.35).ignoresSafeArea()
-            VStack(spacing: 14) {
-                ProgressView().tint(.white).scaleEffect(1.3)
-                Text(gameState.scanMessage)
-                    .foregroundColor(.white)
-                    .font(.headline)
-                    .multilineTextAlignment(.center)
-                Text("v\(appVersion)")
-                    .font(.caption2)
-                    .foregroundColor(.white.opacity(0.4))
+            Color.black.opacity(0.45).ignoresSafeArea()
+            VStack(spacing: 28) {
+                ZStack {
+                    // Background ring
+                    Circle()
+                        .stroke(Color.white.opacity(0.15), lineWidth: 4)
+                        .frame(width: 130, height: 130)
+
+                    // Progress arc
+                    Circle()
+                        .trim(from: 0, to: gameState.scanProgress)
+                        .stroke(Color.cyan, style: StrokeStyle(lineWidth: 4, lineCap: .round))
+                        .frame(width: 130, height: 130)
+                        .rotationEffect(.degrees(-90))
+                        .animation(.easeOut(duration: 0.3), value: gameState.scanProgress)
+
+                    ringCenter
+                }
+
+                VStack(spacing: 6) {
+                    Text(scanStatusText)
+                        .foregroundColor(.white)
+                        .font(.headline)
+                        .animation(.default, value: gameState.phase)
+
+                    if case .scanning = gameState.phase {
+                        Text("Move your phone slowly around the room")
+                            .foregroundColor(.white.opacity(0.6))
+                            .font(.caption)
+                            .multilineTextAlignment(.center)
+                    }
+                }
             }
-            .padding(28)
+            .padding(32)
             .background(.ultraThinMaterial)
-            .cornerRadius(18)
+            .cornerRadius(20)
+            .padding(40)
         }
     }
+
+    @ViewBuilder
+    private var ringCenter: some View {
+        switch gameState.phase {
+        case .hiding:
+            Image(systemName: "lightswitch.off")
+                .font(.system(size: 30))
+                .foregroundColor(.white)
+        default:
+            VStack(spacing: 2) {
+                Text("\(Int(gameState.scanProgress * 100))%")
+                    .font(.title2).bold()
+                    .foregroundColor(.white)
+                    .contentTransition(.numericText())
+                Text("walls")
+                    .font(.caption2)
+                    .foregroundColor(.white.opacity(0.5))
+            }
+        }
+    }
+
+    private var scanStatusText: String {
+        switch gameState.phase {
+        case .hiding: return "Hiding the switch…"
+        default:
+            switch gameState.scanProgress {
+            case ..<0.3: return "Scanning walls…"
+            case ..<0.6: return "Getting there…"
+            case ..<0.9: return "Almost ready…"
+            default:     return "Looking good!"
+            }
+        }
+    }
+
+    // MARK: - Gameplay overlays
 
     private var searchHint: some View {
         VStack {
