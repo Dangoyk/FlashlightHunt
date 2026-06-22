@@ -98,7 +98,8 @@ struct ARSceneView: UIViewRepresentable {
 
         private func setGlow(_ on: Bool) {
             let color: UIColor = on ? UIColor.yellow.withAlphaComponent(0.7) : .clear
-            switchNode?.enumerateHierarchy { node, _ in
+            switchNode?.geometry?.firstMaterial?.emission.contents = color
+            switchNode?.enumerateChildNodes { node, _ in
                 node.geometry?.firstMaterial?.emission.contents = color
             }
         }

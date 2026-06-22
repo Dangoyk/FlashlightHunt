@@ -15,6 +15,7 @@ class GameState: ObservableObject {
     private var startTime: Date?
 
     func switchWasPlaced() {
+        phase = .hiding
         scanMessage = "Switch hidden. Lights out in 2…"
         DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in
             self?.phase = .searching
