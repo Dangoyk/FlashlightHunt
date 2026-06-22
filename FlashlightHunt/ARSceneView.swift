@@ -135,7 +135,7 @@ struct ARSceneView: UIViewRepresentable {
             punchHole(ctx: ctx, at: CGPoint(x: tx, y: ty))
 
             // Wrap seam horizontally so the scratch doesn't cut off at the texture edge
-            let r = CGFloat(18)
+            let r = CGFloat(35)
             if tx < r        { punchHole(ctx: ctx, at: CGPoint(x: tx + CGFloat(Self.texW), y: ty)) }
             if tx > CGFloat(Self.texW) - r { punchHole(ctx: ctx, at: CGPoint(x: tx - CGFloat(Self.texW), y: ty)) }
 
@@ -147,10 +147,10 @@ struct ARSceneView: UIViewRepresentable {
         private func punchHole(ctx: CGContext, at center: CGPoint) {
             let cs = CGColorSpaceCreateDeviceRGB()
             // Gradient: opaque white at center (fully erases) → transparent at edge (erases nothing).
-            // Small radius (18 px ≈ 13° of arc) so the player must sweep deliberately to reveal the room.
+            // 35 px ≈ 25° of arc — requires deliberate sweeping; vignette overlay handles visual edge gap.
             let colors: [CGColor] = [
                 UIColor.white.cgColor,
-                UIColor.white.withAlphaComponent(0.85).cgColor,
+                UIColor.white.withAlphaComponent(0.9).cgColor,
                 UIColor.white.withAlphaComponent(0.3).cgColor,
                 UIColor.clear.cgColor,
             ]
@@ -161,7 +161,7 @@ struct ARSceneView: UIViewRepresentable {
             ctx.setBlendMode(.clear)
             ctx.drawRadialGradient(grad,
                                    startCenter: center, startRadius: 0,
-                                   endCenter:   center, endRadius:   18,
+                                   endCenter:   center, endRadius:   35,
                                    options: [.drawsAfterEndLocation])
             ctx.setBlendMode(.normal)
         }

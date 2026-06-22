@@ -109,13 +109,34 @@ struct ContentView: View {
     }
 
     // MARK: - Scanning
-    // The scratch-sphere IS the visual — just a minimal HUD floats on top.
 
     private var scanningOverlay: some View {
         ZStack {
-            // Crosshair shows the player what they're scratching toward
+            // Vignette: the "edge of paint" the user described.
+            // Transparent center reveals the sphere (and through its holes, the real room).
+            // Solid black at edges — always, regardless of what the sphere shows there —
+            // so the player always sees a crisp paint boundary around the camera view.
+            GeometryReader { geo in
+                let endRadius = min(geo.size.width, geo.size.height) * 0.62
+                RadialGradient(
+                    stops: [
+                        .init(color: .clear,              location: 0),
+                        .init(color: .clear,              location: 0.48),
+                        .init(color: .black.opacity(0.6), location: 0.72),
+                        .init(color: .black,              location: 1.0),
+                    ],
+                    center: .center,
+                    startRadius: 0,
+                    endRadius: endRadius
+                )
+                .ignoresSafeArea()
+                .allowsHitTesting(false)
+            }
+
+            // Crosshair so the player knows exactly what they're scratching
             scanReticle
 
+            // Minimal HUD
             VStack {
                 Text(scanStatusText)
                     .font(.caption)
@@ -154,13 +175,13 @@ struct ContentView: View {
     private var scanReticle: some View {
         ZStack {
             Circle()
-                .stroke(Color.white.opacity(0.5), lineWidth: 1)
+                .stroke(Color.white.opacity(0.4), lineWidth: 1)
                 .frame(width: 22, height: 22)
             Rectangle()
-                .fill(Color.white.opacity(0.5))
+                .fill(Color.white.opacity(0.4))
                 .frame(width: 12, height: 1)
             Rectangle()
-                .fill(Color.white.opacity(0.5))
+                .fill(Color.white.opacity(0.4))
                 .frame(width: 1, height: 12)
         }
     }
